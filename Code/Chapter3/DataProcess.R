@@ -2,7 +2,7 @@ library(tidyverse)
 library(ggplot2)
 library(ggpubr)
 # Import the raw data
-data <- read.table("Data/full2dat.txt", header = TRUE)
+data <- read.table(here::here("Data","full2dat.txt"), header = TRUE)
 # Viral load detection limit is 2
 # Define the viral rebound as two consecutive viral rise
 data <- data %>% 
@@ -18,7 +18,7 @@ data <- data %>%
   mutate(reboundtime = ifelse(rebound == 1, day, 0)) %>%
   mutate(reboundtime = ifelse(sum(reboundtime) != 0, max(reboundtime), max(day)+1)) %>% 
   mutate(reboundnew = ifelse(day >= reboundtime, 1, 0)) %>% 
-  select(1:7, 13) %>% 
+  dplyr::select(1:7, 13) %>% 
   mutate(decay = ifelse(reboundnew == 1, 0, 1))
 # Manually define decay and rebound
 data <- data %>% 
@@ -41,5 +41,5 @@ data3 <- data3 %>%
   group_by(patid) %>% 
   mutate(Ti = case_when(decay == 1 ~ day)) %>% 
   mutate(Ti = max(Ti, na.rm = TRUE))
-write.csv(data3, "Data/Cleaned_data/full2dat_cleaned.csv", row.names = FALSE)
-
+write.csv(data3, here::here("Data","Cleaned_data","full2dat_cleaned.csv"), row.names = FALSE)
+write.table(data3, here::here("Data","Cleaned_data","full2dat_cleaned.txt"), row.names = FALSE)

@@ -1,0 +1,163 @@
+library(lixoftConnectors)
+library(mvtnorm)
+library(nlme)
+library(MASS)
+library(saemix)
+library(tidyverse)
+library(testit)
+library(here)
+library(docopt)
+library(ggplot2)
+library(lmtest)
+library(gridExtra)
+library(splines)
+library(stats)
+library(GLDEX)
+library(lme4)
+library(xtable)
+library(berryFunctions)
+initializeLixoftConnectors(software="monolix")
+setwd(here::here())
+
+## Create results table 
+results_new <- data.frame(matrix(ncol = 5, nrow = 9))
+results_naive <- data.frame(matrix(ncol = 5, nrow = 2))
+results_empirical <- data.frame(matrix(ncol = 5, nrow = 5))
+colnames(results_new) <- colnames(results_naive) <- colnames(results_empirical) <- c("Parameter", "Estimates", "Standard Error", "$z$-value", "$p$-value")
+results_new$Parameter <- c("$\\alpha_1$","$\\alpha_2$","$\\alpha_3$", "$\\alpha_4$","$\\alpha_5$", "$\\alpha_6$", "$\\alpha_7$","$\\beta_0$","$\\beta_w$")
+results_naive$Parameter <- c("$\\beta_0$","$\\beta_w$")
+results_empirical$Parameter <- c("$\\alpha_0$","$\\alpha_1$","$\\alpha_2$","$\\beta_0$","$\\beta_w$")
+
+############ Our model ==========
+# Read in data for Monolix
+data_new = list(dataFile = paste0('Data/Cleaned_Data/full2dat_cleaned.csv'),
+                      headerTypes =c("id","time","ignore","cens","limit","regressor","regressor","obsid","observation","regressor"),
+                      observationTypes =list(CD4 = "categorical", rna = "continuous"))
+modelFile = paste0('Code/Chapter3/model_joint.txt')
+# create a new project by setting a data set and a structural model
+newProject(data = data_new, modelFile = modelFile)
+
+#getObservationInformation()
+setErrorModel(list(yrna = "constant"))
+setObservationDistribution(yrna= "normal")
+# covariates on beta50
+# getCovariateInformation()
+# setCovariateModel(gamma0 = c(trtarm=TRUE))
+# set tasks in scenario
+scenario <- getScenario()
+scenario$tasks = c(populationParameterEstimation = T,
+                   conditionalModeEstimation = T,
+                   conditionalDistributionSampling = T,
+                   standardErrorEstimation=T,
+                   logLikelihoodEstimation=T)
+scenario$linearization = FALSE
+setIndividualParameterVariability(p1 = TRUE, b1 = TRUE, p2 = TRUE, beta1 = TRUE,beta2 = TRUE,beta3 = TRUE,beta4 = TRUE, gamma0 = TRUE, gamma1 = FALSE)
+# setPopulationParameterEstimationSettings(nbexploratoryiterations=1000)
+setIndividualParameterDistribution(p1="normal",b1="normal",p2="normal",beta1="normal",beta2="normal",beta3="normal",beta4="normal", gamma0="normal", gamma1="normal")
+setPopulationParameterInformation(p1_pop = list(initialValue = 11), 
+                                  b1_pop = list(initialValue = 0.2), 
+                                  p2_pop = list(initialValue = 6), 
+                                  beta1_pop = list(initialValue = 1.3), 
+                                  beta2_pop = list(initialValue = 7.6), 
+                                  beta3_pop = list(initialValue = 0.1), 
+                                  beta4_pop = list(initialValue = 2.4), 
+                                  gamma0_pop = list(initialValue = 1), 
+                                  gamma1_pop  = list(initialValue = 1))
+# getVariabilityLevels()
+# setCorrelationBlocks(ID = list(c("b1", "p1", "b2", "p2","beta1","beta2","beta3")))
+# run the estimation
+setScenario(scenario)
+runScenario()
+
+# store the estimates
+results_new$Estimates <- getEstimatedPopulationParameters()[1:9]
+results_new$`Standard Error` <- as.numeric(getEstimatedStandardErrors()[["stochasticApproximation"]][["se"]][1:9])
+results_new$`$z$-value` <- results_new$Estimates/results_new$`Standard Error`
+results_new$`$p$-value` <- 2 * pnorm(abs(results_new$`$z$-value`), lower.tail = FALSE)
+
+# save the results in latex file
+latex_table<-xtable(results_new, type = "latex",align=c("cccccc"))
+digits(latex_table)<-c(0,3,3,3,3,3)
+print(latex_table, file = "Code/Chapter3/results_new.tex",include.rownames=FALSE,sanitize.text.function = function(x){x},hline.after = c(-1,0,9))
+
+# get individual parameters for plots later
+indest <- getEstimatedIndividualParameters()$saem
+write.csv(indest, here::here("Code","Chapter3","indest.csv"))
+
+############ Naive model ===========
+data <- read.csv('Data/Cleaned_Data/full2dat_cleaned.csv')
+data_naive <- pivot_wider(data, names_from = name, values_from = observation)
+data_naive <- data_naive %>% 
+  filter(!is.na(CD4)) %>% 
+  mutate(censor = ifelse(is.na(rna), 1, censor)) %>% 
+  mutate(rna = ifelse(is.na(rna), 2, rna)) %>% 
+  mutate(rna = ifelse(censor == 1, 0.5*rna, rna))
+
+model_naive <- glmmPQL(CD4 ~ rna, random = ~ 1|patid, family=binomial, data=data_naive)
+results_naive$Estimates <- summary(model_naive)$coefficients$fixed
+results_naive$`Standard Error` <- summary(model_naive)$tTable[,2]
+results_naive$`$z$-value` <- results_naive$Estimates/results_naive$`Standard Error`
+results_naive$`$p$-value` <- 2 * pnorm(abs(results_naive$`$z$-value`), lower.tail = FALSE)
+
+# save the results in latex file
+latex_table<-xtable(results_naive, type = "latex",align=c("cccccc"))
+digits(latex_table)<-c(0,3,3,3,3,3)
+print(latex_table, file = "Code/Chapter3/results_naive.tex",include.rownames=FALSE,sanitize.text.function = function(x){x},hline.after = c(-1,0,2))
+
+
+############ Empirical model ============
+data_empirical <- data %>% 
+  mutate(observation = ifelse(censor == 1 & name=="rna", 0.5*observation, observation))
+write.table(data_empirical, "Data/Cleaned_Data/data_empirical.txt", sep = ",", quote = FALSE, row.names = FALSE)
+
+# Read in data for Monolix
+data_empirical = list(dataFile = paste0('Data/Cleaned_Data/data_empirical.txt'),
+                      headerTypes =c("id","time","ignore","ignore","ignore","ignore","ignore","obsid","observation","ignore"),
+                      observationTypes =list(CD4 = "categorical", rna = "continuous"))
+modelFile = paste0('Code/Chapter3/model_empirical.txt')
+# create a new project by setting a data set and a structural model
+newProject(data = data_empirical, modelFile = modelFile)
+
+#getObservationInformation()
+setErrorModel(list(ylog10rna = "constant"))
+setObservationDistribution(ylog10rna= "normal")
+# covariates on beta50
+# getCovariateInformation()
+# setCovariateModel(gamma0 = c(trtarm=TRUE))
+# set tasks in scenario
+scenario <- getScenario()
+scenario$tasks = c(populationParameterEstimation = T,
+                   conditionalModeEstimation = T,
+                   conditionalDistributionSampling = T,
+                   standardErrorEstimation=T,
+                   logLikelihoodEstimation=T)
+scenario$linearization = FALSE
+setIndividualParameterVariability(alpha0 = TRUE, alpha1 = TRUE, alpha2 = TRUE, gamma0 = TRUE, gamma1 = FALSE)
+setPopulationParameterEstimationSettings(nbexploratoryiterations=1000)
+setIndividualParameterDistribution(alpha0="normal",alpha1="normal",alpha2="normal", gamma0="normal", gamma1="normal")
+setPopulationParameterInformation(gamma0_pop = list(initialValue = 8), 
+                                  gamma1_pop  = list(initialValue = -2.5))
+# getVariabilityLevels()
+# setCorrelationBlocks(ID = list(c("b1", "p1", "b2", "p2","beta1","beta2","beta3")))
+# run the estimation
+setScenario(scenario)
+runScenario()
+# store the estimates
+results_empirical$Estimates <- getEstimatedPopulationParameters()[1:5]
+results_empirical$`Standard Error` <- as.numeric(getEstimatedStandardErrors()[["stochasticApproximation"]][["se"]][1:5])
+results_empirical$`$z$-value` <- results_empirical$Estimates/results_empirical$`Standard Error`
+results_empirical$`$p$-value` <- 2 * pnorm(abs(results_empirical$`$z$-value`), lower.tail = FALSE)
+
+# save the results in latex file
+latex_table<-xtable(results_empirical, type = "latex",align=c("cccccc"))
+digits(latex_table)<-c(0,3,3,3,3,3)
+print(latex_table, file = "Code/Chapter3/results_empirical.tex",include.rownames=FALSE,sanitize.text.function = function(x){x},hline.after = c(-1,0,5))
+
+
+
+
+
+
+
+
+
